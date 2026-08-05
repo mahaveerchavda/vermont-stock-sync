@@ -1,0 +1,34 @@
+name: Vermont Sales Stock Sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Vermont nightly exports
+        run: |
+          curl -fsSL -o pricing_availability.csv.gz "https://www.vermontsales.co.za/exports_v2/pricing_availability.csv.gz"
+          curl -fsSL -o products.csv.gz "https://www.vermontsales.co.za/exports_v2/products.csv.gz"
+          gunzip -f pricing_availability.csv.gz
+          gunzip -f products.csv.gz
+          wc -l pricing_availability.csv products.csv
+
+      - name: Commit if changed
+        run: |
+          git config user.name "vermont-sync-bot"
+          git config user.email "actions@github.com"
+          git add pricing_availability.csv products.csv
+          if git diff --staged --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Vermont export update $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
