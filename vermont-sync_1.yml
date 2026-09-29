@@ -1,0 +1,80 @@
+name: Vermont Stock Sync
+
+# Manual trigger only for now - no schedule is enabled. Once you've reviewed
+# a few dry runs and a couple of live runs and you're happy, uncomment the
+# `schedule:` block below to make this run automatically every night.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (true = plan only, no writes to Shopify)"
+        type: boolean
+        default: true
+  # schedule:
+  #   - cron: "0 2 * * *"   # 02:00 UTC = 04:00 SAST. Uncomment when ready to go live nightly.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vermont-sync
+  cancel-in-progress: false   # queue instead of cancel, so runs never overlap
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch latest Vermont feed (guarantee freshness)
+        run: |
+          set -e
+          # Always pull the current feed straight from the repo's own raw
+          # mirror, cache-busted, rather than trusting whatever the checkout
+          # step happened to have. This is the same file this repo already
+          # serves at pricing_availability.csv - this just makes sure we
+          # never sync against a stale copy if it changed after checkout.
+          curl -fsSL --retry 3 --retry-delay 3 \
+            "https://raw.githubusercontent.com/mahaveerchavda/vermont-stock-sync/main/pricing_availability.csv?cachebust=$(date +%s)" \
+            -o pricing_availability.csv
+          echo "Fetched $(wc -l < pricing_availability.csv) lines."
+
+      - name: Run Vermont stock sync
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+        run: |
+          set -e
+          # workflow_dispatch carries an explicit dry_run input (default
+          # true). A schedule trigger carries no inputs at all - the whole
+          # point of scheduling this is to run it live unattended, so a
+          # scheduled run defaults to LIVE rather than silently no-op'ing
+          # as a dry run forever. The schedule trigger itself stays
+          # commented out above until you're ready, so this branch is inert
+          # for now, but is correct the moment it's enabled.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Scheduled run - defaulting to LIVE."
+            python3 vermont_sync.py --live --csv-path pricing_availability.csv
+          elif [ "${{ inputs.dry_run }}" = "false" ]; then
+            echo "Running LIVE - this will write to Shopify."
+            python3 vermont_sync.py --live --csv-path pricing_availability.csv
+          else
+            echo "Running DRY RUN - no writes will be made."
+            python3 vermont_sync.py --csv-path pricing_availability.csv
+          fi
+
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vermont-sync-summary-${{ github.run_id }}
+          path: vermont_sync_summary.json
+          retention-days: 30
