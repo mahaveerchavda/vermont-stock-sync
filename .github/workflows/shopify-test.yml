@@ -1,0 +1,89 @@
+name: Shopify Connection Test
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test Shopify credentials and permissions
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+          import urllib.error
+
+          def fail(message):
+              print(message)
+              sys.exit(1)
+
+          names = [
+              "SHOPIFY_SHOP",
+              "SHOPIFY_CLIENT_ID",
+              "SHOPIFY_CLIENT_SECRET",
+          ]
+          values = {name: os.environ.get(name, "").strip() for name in names}
+          for name, value in values.items():
+              if not value:
+                  fail(f"Missing secret: {name}")
+
+          shop = values["SHOPIFY_SHOP"]
+          if shop != "sd1zxd-ng.myshopify.com":
+              fail("SHOPIFY_SHOP must be sd1zxd-ng.myshopify.com")
+
+          payload = urllib.parse.urlencode({
+              "grant_type": "client_credentials",
+              "client_id": values["SHOPIFY_CLIENT_ID"],
+              "client_secret": values["SHOPIFY_CLIENT_SECRET"],
+          }).encode()
+
+          request = urllib.request.Request(
+              f"https://{shop}/admin/oauth/access_token",
+              data=payload,
+              headers={"Content-Type": "application/x-www-form-urlencoded"},
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as error:
+              fail(
+                  f"Authentication failed: HTTP {error.code}. "
+                  "Check credentials, app installation and organisation ownership."
+              )
+          except Exception:
+              fail("Connection failed: network error or invalid response.")
+
+          token = result.get("access_token")
+          if not token:
+              fail("Authentication failed: no access token returned.")
+
+          print(f"::add-mask::{token}")
+          print("SUCCESS: Shopify authentication passed.")
+
+          scopes = {
+              scope.strip()
+              for scope in result.get("scope", "").split(",")
+              if scope.strip()
+          }
+          required = {"write_inventory", "write_products", "read_locations"}
+          missing = required - scopes
+
+          if missing:
+              fail("Missing required permissions: " + ", ".join(sorted(missing)))
+
+          print("SUCCESS: Inventory, product and location permissions confirmed.")
+          print("No stock, prices, products or tags were changed.")
+          PY
