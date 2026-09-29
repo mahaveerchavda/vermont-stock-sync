@@ -1,0 +1,64 @@
+name: Vermont Shopify Stock Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — no stock or tag changes"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vermont-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download current Vermont stock feed
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-delay 3 \
+            "https://www.vermontsales.co.za/exports_v2/pricing_availability.csv.gz" \
+            -o pricing_availability.csv.gz
+          gzip -t pricing_availability.csv.gz
+          gunzip -f pricing_availability.csv.gz
+          test -s pricing_availability.csv
+          echo "Downloaded $(wc -l < pricing_availability.csv) lines."
+
+      - name: Run Vermont stock sync
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "false" ]; then
+            echo "LIVE — updating Warehouse Stock and tags."
+            python3 vermont_sync.py --live --csv-path pricing_availability.csv
+          else
+            echo "DRY RUN — no stock or tag changes."
+            python3 vermont_sync.py --csv-path pricing_availability.csv
+          fi
+
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vermont-sync-summary-${{ github.run_id }}
+          path: vermont_sync_summary.json
+          retention-days: 30
